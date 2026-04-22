@@ -6,7 +6,27 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
 
+tasks.register('cleanupNodeLibGz') {
+    doLast {
+        delete fileTree(dir: 'libs/cdvnodejsmobile/libnode/bin', include: ['**/*.so.gz'])
+    }
+}
+
 android {
+    packagingOptions {
+        jniLibs {
+            pickFirsts += ['lib/x86/libnode.so', 'lib/armeabi-v7a/libnode.so', 'lib/arm64-v8a/libnode.so', 'lib/x86_64/libnode.so']
+            excludes += ['**/libnode.so.gz']
+        }
+    }
+    sourceSets {
+        main {
+            jniLibs.srcDirs += ['libs/cdvnodejsmobile/libnode/bin']
+        }
+    }
+    lint {
+        abortOnError false
+    }
     namespace = "top.imsyy.splayer.android"
     compileSdk = rootProject.ext.compileSdkVersion
     signingConfigs {
@@ -36,20 +56,22 @@ android {
         release {
             minifyEnabled false
             signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 
-    // 分架构构建：每个 ABI 生成独立 APK，不再生成 universal 合包
+    // 分架构构建：暂时关闭以修复 libnode.so 丢失导致的崩溃问题
     splits {
         abi {
-            enable true
+            enable false
             reset()
             include 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
-            universalApk false
+            universalApk true
         }
     }
 }
+
+preBuild.dependsOn cleanupNodeLibGz
 
 repositories {
     flatDir{

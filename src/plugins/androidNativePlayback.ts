@@ -54,7 +54,10 @@ export interface AndroidNativeApiContextPayload {
   cookie: string;
 }
 
-export interface AndroidNativePlaybackStateEvent extends AndroidNativePlaybackState {}
+export interface AndroidNativePlaybackStateEvent {
+  // 增加必要的成员定义，例如
+  state: string;
+}
 
 export interface AndroidNativeProgressEvent {
   durationMs: number;

@@ -33,7 +33,7 @@ const transpileJavaScriptTree = async (rootPath: string) => {
         continue;
       }
 
-      if (!entry.isFile() || !entry.name.endsWith(".js")) continue;
+      if (!entry.isFile() || !entry.name.endsWith(".js") || entry.name === "README.js") continue;
 
       const source = await readFile(entryPath, "utf8");
       try {

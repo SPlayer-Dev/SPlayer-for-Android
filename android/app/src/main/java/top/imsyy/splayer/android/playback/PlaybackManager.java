@@ -352,6 +352,18 @@ public final class PlaybackManager {
 
   public synchronized void updateMetadata(TrackMetadata metadata) {
     currentMetadata = metadata == null ? new TrackMetadata() : metadata;
+    currentMetadata.url = currentSource;
+    if (player != null) {
+      MediaItem currentItem = player.getCurrentMediaItem();
+      if (currentItem != null) {
+        player.replaceMediaItem(
+            player.getCurrentMediaItemIndex(),
+            currentItem.buildUpon().setMediaMetadata(buildMediaMetadata()).build());
+      }
+    }
+    if (mediaSession != null) {
+      mediaSession.setSessionActivity(buildContentIntent());
+    }
     loadCoverBitmapAsync(currentMetadata.coverUrl);
     updateMediaSessionButtons();
     updateNotification();
@@ -683,6 +695,9 @@ public final class PlaybackManager {
     if (currentMetadata.album != null) {
       builder.setAlbumTitle(currentMetadata.album);
     }
+    if (currentMetadata.durationMs > 0) {
+      builder.setDurationMs(currentMetadata.durationMs);
+    }
     if (currentMetadata.coverUrl != null
         && !currentMetadata.coverUrl.isEmpty()
         && !currentMetadata.coverUrl.startsWith("blob:")) {
@@ -848,6 +863,15 @@ public final class PlaybackManager {
   }
 
   private Notification buildNotification() {
+    long durationMs = getDurationMs();
+    long positionMs = getPositionMs();
+    String artistText = safeText(currentMetadata.artist, "");
+    String progressText = durationMs > 0 ? formatTime(positionMs) + " / " + formatTime(durationMs) : "";
+    String contentText = artistText;
+    if (!progressText.isEmpty()) {
+      contentText = artistText.isEmpty() ? progressText : artistText + "  " + progressText;
+    }
+
     NotificationCompat.Builder builder =
         new NotificationCompat.Builder(appContext, PlaybackConstants.CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -860,8 +884,16 @@ public final class PlaybackManager {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(isEffectivelyPlaying() || isEffectivelyBuffering())
             .setContentTitle(safeText(currentMetadata.title, appContext.getString(R.string.app_name)))
-            .setContentText(safeText(currentMetadata.artist, ""))
+            .setContentText(contentText)
             .setLargeIcon(coverBitmap);
+
+    if (durationMs > 0) {
+      builder.setProgress((int) durationMs, (int) Math.min(positionMs, durationMs), false);
+      builder.setSubText(progressText);
+    } else {
+      builder.setProgress(0, 0, false);
+      builder.setSubText(null);
+    }
 
     if (!controllerEnabled) {
       return builder.build();

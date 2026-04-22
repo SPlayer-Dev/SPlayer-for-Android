@@ -1,6 +1,7 @@
 import { useSettingStore } from "@/stores";
-import { checkIsolationSupport, isElectron } from "@/utils/env";
+import { checkIsolationSupport, isElectron, isCapacitorAndroid } from "@/utils/env";
 import { TypedEventTarget } from "@/utils/TypedEventTarget";
+import { AndroidNativeAudioPlayer } from "../audio-player/AndroidNativeAudioPlayer";
 import { AudioElementPlayer } from "../audio-player/AudioElementPlayer";
 import { AUDIO_EVENTS, type AudioEventMap } from "../audio-player/BaseAudioPlayer";
 import { FFmpegAudioPlayer } from "../audio-player/ffmpeg-engine/FFmpegAudioPlayer";
@@ -42,10 +43,11 @@ class AudioManager extends TypedEventTarget<AudioEventMap> implements IPlaybackE
   constructor(playbackEngine: "web-audio" | "mpv", audioEngine: "element" | "ffmpeg") {
     super();
 
-    // 根据设置选择引擎
-    // Android：暂时回退到 HTMLAudioElement（AudioElementPlayer），
-    //   ExoPlayer 原生引擎的 seek 行为一直调不好，先保证可用。
-    if (isElectron && playbackEngine === "mpv") {
+    // Android 优先使用 AndroidNativeAudioPlayer
+    if (isCapacitorAndroid) {
+      this.engine = new AndroidNativeAudioPlayer();
+      this.engineType = "android-native";
+    } else if (isElectron && playbackEngine === "mpv") {
       const mpvPlayer = useMpvPlayer();
       mpvPlayer.init();
       this.engine = mpvPlayer;
@@ -170,6 +172,8 @@ class AudioManager extends TypedEventTarget<AudioEventMap> implements IPlaybackE
     let newEngine: IPlaybackEngine;
     if (this.engineType === "ffmpeg") {
       newEngine = new FFmpegAudioPlayer();
+    } else if (this.engineType === "android-native") {
+      newEngine = new AndroidNativeAudioPlayer();
     } else {
       newEngine = new AudioElementPlayer();
     }

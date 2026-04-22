@@ -31,6 +31,7 @@ export class AndroidNativeAudioPlayer extends BaseAudioPlayer {
   private pendingSeekSeconds: number | null = null;
   private pendingSeekDeadline = 0;
   private pendingSeekObservedAtTarget = false;
+  private suppressPlaybackEventUntil = 0;
 
   /** Seek 锁，确保 seek 期间 currentTime 始终返回目标值 */
   private isSeekLocked = false;
@@ -72,6 +73,7 @@ export class AndroidNativeAudioPlayer extends BaseAudioPlayer {
     this.pendingSeekSeconds = null;
     this.pendingSeekDeadline = 0;
     this.pendingSeekObservedAtTarget = false;
+    this.suppressPlaybackEventUntil = 0;
     void this.releaseListeners();
   }
 
@@ -111,6 +113,7 @@ export class AndroidNativeAudioPlayer extends BaseAudioPlayer {
    */
   public override async seek(time: number): Promise<void> {
     const safeTime = Math.max(0, time);
+    const wasPaused = this.pausedValue;
     this.isSeekLocked = true;
     this.seekTargetSeconds = safeTime;
     this.currentTimeSecondsValue = safeTime;
@@ -124,6 +127,10 @@ export class AndroidNativeAudioPlayer extends BaseAudioPlayer {
       positionMs: Math.max(0, Math.round(safeTime * 1000)),
     });
     this.applyState(state);
+    if (wasPaused && !this.pausedValue) {
+      this.suppressPlaybackEventUntil = Date.now() + 1000;
+      this.applyState(await AndroidNativePlayback.pause());
+    }
     this.isSeekLocked = false;
     this.dispatch(AUDIO_EVENTS.SEEKED);
   }
@@ -201,7 +208,10 @@ export class AndroidNativeAudioPlayer extends BaseAudioPlayer {
           this.dispatch(AUDIO_EVENTS.CAN_PLAY);
         }
 
-        if (previousPaused !== this.pausedValue) {
+        if (
+          previousPaused !== this.pausedValue &&
+          Date.now() >= this.suppressPlaybackEventUntil
+        ) {
           this.dispatch(this.pausedValue ? AUDIO_EVENTS.PAUSE : AUDIO_EVENTS.PLAY);
         }
       }),
@@ -272,6 +282,9 @@ export class AndroidNativeAudioPlayer extends BaseAudioPlayer {
     }
     if (typeof state.errorCode === "number") {
       this.errorCode = state.errorCode;
+    }
+    if (Date.now() >= this.suppressPlaybackEventUntil) {
+      this.suppressPlaybackEventUntil = 0;
     }
   }
 

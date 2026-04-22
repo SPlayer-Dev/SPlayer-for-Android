@@ -126,7 +126,9 @@ export const useMusicStore = defineStore("music", {
           try {
             const player = usePlayerController();
             player.syncFloatingLyricData();
-          } catch {}
+          } catch (e) {
+            console.error("同步悬浮歌词失败:", e);
+          }
         });
       }
     },

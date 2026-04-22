@@ -246,6 +246,9 @@ class PlayerController {
     }
     // 同步 Android 悬浮歌词歌曲信息
     this.syncFloatingLyricSongInfo();
+    if (isCapacitorAndroid) {
+      void mediaSessionManager.updateMetadata();
+    }
     // 获取歌词
     lyricManager.handleLyric(song);
   }
@@ -1820,7 +1823,9 @@ class PlayerController {
           window.$message.warning("请先授予悬浮窗权限");
           try {
             await AndroidNativePlayback.requestOverlayPermission();
-          } catch {}
+          } catch (e) {
+            console.error("申请权限失败:", e);
+          }
           return;
         }
       }
