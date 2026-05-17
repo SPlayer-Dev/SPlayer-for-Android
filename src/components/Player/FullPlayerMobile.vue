@@ -174,10 +174,12 @@ const dataStore = useDataStore();
 const player = usePlayerController();
 const { timeDisplay, toggleTimeFormat } = useTimeFormat();
 
+let savedPageIndex = 0;
+
 const mobileStart = ref<HTMLElement | null>(null);
 const topBarRef = ref<HTMLElement | null>(null);
 const dragHandleRef = ref<HTMLElement | null>(null);
-const pageIndex = ref(0);
+const pageIndex = ref(savedPageIndex);
 
 // 下拉关闭手势捕获区高度：信息页仅覆盖顶栏 + 封面上半段，避免遮挡下方按钮
 // 歌词页含顶栏 + 歌曲信息条
@@ -277,6 +279,7 @@ const resetInlineStyles = () => {
 // 方向锁，避免左右翻页手势触发下拉
 let directionLock: "h" | "v" | null = null;
 let dragStarted = false;
+let activeCloseGesture = false;
 const DIRECTION_LOCK_TOLERANCE = 8;
 
 const { lengthX: topLengthX, lengthY: topLengthY } = useSwipe(dragHandleRef, {
@@ -284,6 +287,7 @@ const { lengthX: topLengthX, lengthY: topLengthY } = useSwipe(dragHandleRef, {
   onSwipeStart: () => {
     directionLock = null;
     dragStarted = false;
+    activeCloseGesture = false;
   },
   onSwipe: () => {
     // 横向手势锁定后直接放行给翻页 useSwipe 处理
@@ -292,8 +296,10 @@ const { lengthX: topLengthX, lengthY: topLengthY } = useSwipe(dragHandleRef, {
       const ax = Math.abs(topLengthX.value);
       const ay = Math.abs(topLengthY.value);
       if (Math.max(ax, ay) < DIRECTION_LOCK_TOLERANCE) return;
-      directionLock = ay > ax ? "v" : "h";
+      // 偏向纵向触发下拉关闭，但保留略偏水平时的翻页能力（ax > ay * 1.2 视为水平）
+      directionLock = ax > ay * 1.2 ? "h" : "v";
       if (directionLock === "h") return;
+      activeCloseGesture = true;
     }
     if (!dragStarted) {
       beginDrag();
@@ -309,6 +315,14 @@ const { lengthX: topLengthX, lengthY: topLengthY } = useSwipe(dragHandleRef, {
     const wasDragging = dragStarted;
     directionLock = null;
     dragStarted = false;
+    // 兜底：本次手势结束后短暂保留 activeCloseGesture，
+    // 等 mobileStart 的 onSwipeEnd 消费后再由它清理；
+    // 若 mobileStart 没有收到（事件被中途取消），下一帧自动复位
+    if (activeCloseGesture) {
+      requestAnimationFrame(() => {
+        activeCloseGesture = false;
+      });
+    }
     if (!wasDragging) return;
     if (rafId) {
       cancelAnimationFrame(rafId);
@@ -349,6 +363,7 @@ const { lengthX: topLengthX, lengthY: topLengthY } = useSwipe(dragHandleRef, {
 });
 
 onBeforeUnmount(() => {
+  savedPageIndex = pageIndex.value;
   if (rafId) cancelAnimationFrame(rafId);
   resetInlineStyles();
 });
@@ -370,6 +385,10 @@ watch(hasLyric, (value) => {
 const { direction, isSwiping, lengthX, lengthY } = useSwipe(mobileStart, {
   threshold: 5,
   onSwipeEnd: () => {
+    if (activeCloseGesture) {
+      activeCloseGesture = false;
+      return;
+    }
     if (!hasLyric.value) return;
     // 仅在主方向为水平时触发翻页，避免上下滑动歌词误触
     if (Math.abs(lengthX.value) <= Math.abs(lengthY.value)) return;
@@ -384,7 +403,10 @@ const { direction, isSwiping, lengthX, lengthY } = useSwipe(mobileStart, {
 
 // 当前滑动是否为水平方向（用于跟手位移）
 const isHorizontalSwipe = computed(
-  () => isSwiping.value && Math.abs(lengthX.value) > Math.abs(lengthY.value),
+  () =>
+    isSwiping.value &&
+    Math.abs(lengthX.value) > Math.abs(lengthY.value) &&
+    !activeCloseGesture,
 );
 
 const contentTransform = computed(() => {

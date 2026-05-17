@@ -139,8 +139,6 @@ const onMobileEnter = (el: Element, done: () => void) => {
   parent.style.transform = "translate3d(0, 100vh, 0) scale(0.92)";
   parent.style.borderRadius = "28px";
   parent.style.backfaceVisibility = "hidden";
-  parent.style.backdropFilter = "blur(48px)";
-  parent.style.contain = "paint";
   // 强制重排，确保起始状态生效
   parent.getBoundingClientRect();
   requestAnimationFrame(() => {
@@ -153,8 +151,6 @@ const onMobileEnter = (el: Element, done: () => void) => {
     parent.style.willChange = "";
     parent.style.transformOrigin = "";
     parent.style.backfaceVisibility = "";
-    parent.style.backdropFilter = "";
-    parent.style.contain = "";
     done();
   }, 380);
 };
@@ -170,8 +166,6 @@ const onMobileLeave = (el: Element, done: () => void) => {
   parent.style.transition = MOBILE_CARD_LEAVE;
   parent.style.borderRadius = "28px";
   parent.style.backfaceVisibility = "hidden";
-  parent.style.backdropFilter = "blur(48px)";
-  parent.style.contain = "paint";
   requestAnimationFrame(() => {
     parent.style.transform = "translate3d(0, 100vh, 0) scale(0.92)";
   });
@@ -344,13 +338,13 @@ watch(
 onMounted(() => {
   mainCoverColor.value = statusStore.mainColor;
   if (isElectron && settingStore.preventSleep) {
-    window.electron.ipcRenderer.send("prevent-sleep", true);
+    window.electron?.ipcRenderer.send("prevent-sleep", true);
   }
 });
 
 onBeforeUnmount(() => {
   stopShow();
-  if (isElectron) window.electron.ipcRenderer.send("prevent-sleep", false);
+  if (isElectron) window.electron?.ipcRenderer.send("prevent-sleep", false);
 });
 </script>
 

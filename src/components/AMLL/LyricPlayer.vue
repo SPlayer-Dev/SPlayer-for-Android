@@ -227,7 +227,7 @@ const syncPlaybackTime = (time: number) => {
   const player = getInternalPlayer();
   if (!player) return;
 
-  const previousHotLines = new Set(player.hotLines ?? []);
+  const previousHotLines: Set<number> = new Set(player.hotLines ?? []);
   player.setCurrentTime(time, false);
   syncNewHotLineAnimations(player, previousHotLines, time);
 };
@@ -261,8 +261,35 @@ const syncSeekTime = (time: number) => {
 onMounted(() => {
   const wrapper = wrapperRef.value;
   if (wrapper) {
-    playerRef.value = new CoreLyricPlayer();
-    wrapper.appendChild(playerRef.value.getElement());
+    // AMLL 核心库在构造时注册非 passive 的 touchstart/touchmove 监听器，
+    // 产生 Chrome [Violation] 警告。临时补丁强制改为 passive，
+    // 配合 CSS touch-action: none 让浏览器不处理触摸滚动
+    const origAddEventListener = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ) {
+      if (type === "touchstart" || type === "touchmove") {
+        const merged: AddEventListenerOptions =
+          typeof options === "object" && options !== null
+            ? { ...options, passive: true }
+            : { capture: options === true, passive: true };
+        return origAddEventListener.call(this, type, listener, merged);
+      }
+      return origAddEventListener.call(this, type, listener, options);
+    };
+
+    try {
+      playerRef.value = new CoreLyricPlayer();
+    } finally {
+      // 无论构造是否抛错，都必须还原全局原型，避免污染整个应用
+      EventTarget.prototype.addEventListener = origAddEventListener;
+    }
+
+    const el = playerRef.value.getElement();
+    el.style.touchAction = "none";
+    wrapper.appendChild(el);
     playerRef.value.addEventListener("line-click", lineClickHandler);
     playerRef.value.addEventListener("line-contextmenu", lineContextMenuHandler);
   }

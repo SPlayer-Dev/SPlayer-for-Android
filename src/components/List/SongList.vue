@@ -122,7 +122,7 @@
                       ? handlePointerDown($event, index, item.data.name || '未知曲目')
                       : undefined
                   "
-                  @touchstart="
+                  @touchstart.passive="
                     draggable
                       ? handlePointerDown($event, index, item.data.name || '未知曲目')
                       : undefined

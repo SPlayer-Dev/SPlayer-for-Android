@@ -303,8 +303,13 @@ const setDragOpenFlag = (v: boolean) => {
   (window as unknown as { __splayerDragOpen?: boolean }).__splayerDragOpen = v;
 };
 
+// 关闭分支的最终落实回调（settimeout 延迟 240ms 后才会把 showFullPlayer 置 false）
+// 取消 timer 时若未执行需要立即同步执行，否则 FullPlayer 会卡在起始位置
+let pendingCloseFinalize: (() => void) | null = null;
+
 // 取消上一轮手势遗留的异步清理 timer，避免清掉新手势的 inline 样式
-const cancelDragOpenTimers = () => {
+// flushClose=true 时如果有挂起的关闭动作，立即落实关闭，避免 FullPlayer 卡在起始位置
+const cancelDragOpenTimers = (flushClose = false) => {
   if (dragOpenResetTimer) {
     window.clearTimeout(dragOpenResetTimer);
     dragOpenResetTimer = 0;
@@ -312,7 +317,14 @@ const cancelDragOpenTimers = () => {
   if (dragOpenCloseTimer) {
     window.clearTimeout(dragOpenCloseTimer);
     dragOpenCloseTimer = 0;
+    if (flushClose && pendingCloseFinalize) {
+      const finalize = pendingCloseFinalize;
+      pendingCloseFinalize = null;
+      finalize();
+      return;
+    }
   }
+  if (flushClose) pendingCloseFinalize = null;
 };
 
 const writeDragOpen = (dy: number) => {
@@ -337,25 +349,24 @@ const scheduleDragOpenFlush = (dy: number) => {
   });
 };
 
-const initDragOpen = () => {
-  // 取消上一轮手势遗留的清理 timer，避免清掉本次 inline 样式
-  cancelDragOpenTimers();
-  const parent = document.querySelector(".full-player") as HTMLElement | null;
-  const main = document.getElementById("main");
-  if (parent) {
-    dragOpenParent = parent;
-    parent.style.transformOrigin = "50% 0";
-    parent.style.willChange = "transform";
-    parent.style.transition = "none";
-    // 起始放置在底栏顶部位置，让卡片从控制条向上展开
-    parent.style.transform = `translate3d(0, ${dragStartTop}px, 0) scale(0.92)`;
-    parent.style.borderRadius = "28px";
-    parent.style.backfaceVisibility = "hidden";
-    parent.style.backdropFilter = "blur(48px)";
-    parent.style.contain = "paint";
-    // 关键：让 FullPlayer 在拖拽期间不拦截触摸，事件继续命中底栏（playerRef）
-    parent.style.pointerEvents = "none";
-  }
+// .full-player 经 <Transition mode="out-in"> + Teleport 异步挂载，
+// 在 Vue 微任务流较忙或上一次离开动画未完成时可能短暂不存在，
+// 此时直接放弃会导致 FullPlayer 被 onMobileEnter 的 100vh 起始 transform 卡住，
+// 因此使用一次重试，最多 8 帧，仍找不到则放弃并复位 showFullPlayer。
+let initDragOpenRetry = 0;
+const INIT_DRAG_OPEN_MAX_RETRY = 8;
+
+const applyDragOpenInline = (parent: HTMLElement, main: HTMLElement | null) => {
+  dragOpenParent = parent;
+  parent.style.transformOrigin = "50% 0";
+  parent.style.willChange = "transform";
+  parent.style.transition = "none";
+  // 起始放置在底栏顶部位置，让卡片从控制条向上展开
+  parent.style.transform = `translate3d(0, ${dragStartTop}px, 0) scale(0.92)`;
+  parent.style.borderRadius = "28px";
+  parent.style.backfaceVisibility = "hidden";
+  // 关键：让 FullPlayer 在拖拽期间不拦截触摸，事件继续命中底栏（playerRef）
+  parent.style.pointerEvents = "none";
   if (main) {
     dragOpenMain = main;
     main.style.transition = "none";
@@ -363,6 +374,34 @@ const initDragOpen = () => {
     main.style.opacity = "1";
     main.style.transform = "scale(1)";
   }
+};
+
+const initDragOpen = () => {
+  // 取消上一轮手势遗留的清理 timer，避免清掉本次 inline 样式
+  cancelDragOpenTimers();
+  initDragOpenRetry = 0;
+  const tryAttach = () => {
+    if (!dragOpenActive) return;
+    const parent = document.querySelector(".full-player") as HTMLElement | null;
+    const main = document.getElementById("main");
+    if (parent) {
+      applyDragOpenInline(parent, main);
+      // 命中后立刻把当前 dy 写入，避免 0 dy 一帧裸态
+      writeDragOpen(Math.max(dragLastDy, 0));
+      return;
+    }
+    if (initDragOpenRetry++ < INIT_DRAG_OPEN_MAX_RETRY) {
+      requestAnimationFrame(tryAttach);
+      return;
+    }
+    // 超过重试上限，撤销开启意图，防止用户被卡在不可见的 FullPlayer 上
+    console.warn("[MainPlayer] 拖拽开启时未能找到 .full-player，回退关闭");
+    dragOpenActive = false;
+    dragOpenLocked = null;
+    setDragOpenFlag(false);
+    statusStore.showFullPlayer = false;
+  };
+  tryAttach();
 };
 
 const resetDragOpen = () => {
@@ -378,8 +417,6 @@ const resetDragOpen = () => {
     dragOpenParent.style.willChange = "";
     dragOpenParent.style.pointerEvents = "";
     dragOpenParent.style.backfaceVisibility = "";
-    dragOpenParent.style.backdropFilter = "";
-    dragOpenParent.style.contain = "";
   }
   if (dragOpenMain) {
     dragOpenMain.style.transition = "";
@@ -400,11 +437,33 @@ const finishDragOpen = (dy: number) => {
     cancelAnimationFrame(dragOpenRaf);
     dragOpenRaf = 0;
   }
+  // 兜底：若挂载阶段重试未成功捕获到 .full-player，dragOpenParent 仍为 null，
+  // 此时 onMobileEnter 已把元素定位到 100vh 离屏。无论开/关结果都必须现在重查并清掉 inline 样式，
+  // 否则 FullPlayer 会被永久卡在屏幕外（showFullPlayer 为 true 但用户什么都看不到）。
+  if (!dragOpenParent) {
+    const parent = document.querySelector(".full-player") as HTMLElement | null;
+    if (parent) {
+      dragOpenParent = parent;
+      // 清掉 onMobileEnter 留下的离屏 transform 及其它内联样式
+      parent.style.transition = "";
+      parent.style.transform = "";
+      parent.style.borderRadius = "";
+      parent.style.transformOrigin = "";
+      parent.style.willChange = "";
+      parent.style.pointerEvents = "";
+      parent.style.backfaceVisibility = "";
+    }
+    if (!dragOpenMain) {
+      dragOpenMain = document.getElementById("main");
+    }
+  }
   if (shouldOpen) {
     if (dragOpenParent) {
       dragOpenParent.style.transition =
         "transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)";
       dragOpenParent.style.transform = "";
+      // 立即恢复全屏播放器的指针事件，避免开启动画期间 (~320ms) 触摸穿透到底层主页
+      dragOpenParent.style.pointerEvents = "";
     }
     if (dragOpenMain) {
       dragOpenMain.style.transition =
@@ -428,13 +487,18 @@ const finishDragOpen = (dy: number) => {
       dragOpenMain.style.opacity = "1";
       dragOpenMain.style.transform = "scale(1)";
     }
+    // 注册关闭最终落实回调，便于在新手势打断时同步执行，避免 FullPlayer 被卡在起始位置
+    pendingCloseFinalize = () => {
+      statusStore.showFullPlayer = false;
+      // 这里不再延迟 360ms reset：新手势打断的情况下需要立即清理 inline，
+      // 正常路径下 onMobileLeave 会负责接管离场动画
+      resetDragOpen();
+    };
     dragOpenCloseTimer = window.setTimeout(() => {
       dragOpenCloseTimer = 0;
-      statusStore.showFullPlayer = false;
-      dragOpenResetTimer = window.setTimeout(() => {
-        dragOpenResetTimer = 0;
-        resetDragOpen();
-      }, 360);
+      const finalize = pendingCloseFinalize;
+      pendingCloseFinalize = null;
+      if (finalize) finalize();
     }, 240);
   }
 };
@@ -446,8 +510,35 @@ let horizontalDirection: "left" | "right" | null = null;
 
 const onPointerDown = (e: PointerEvent) => {
   if (e.pointerType === "mouse" && e.button !== 0) return;
-  // 新手势开始前取消上一轮异步清理，防止 timer 把本次样式清掉
-  cancelDragOpenTimers();
+  // 新手势开始前取消上一轮异步清理，防止 timer 把本次样式清掉。
+  // flushClose=true：若上一次手势的关闭动作正在等待落实，立即执行掉，
+  // 否则会出现 showFullPlayer=true 但 FullPlayer 卡在起始位置且无法响应触摸的状态
+  cancelDragOpenTimers(true);
+  // 兜底恢复：若 FullPlayer 标记为打开但 .full-player 残留内联 transform / pointer-events:none，
+  // 说明上一次拖拽流程留下了脏状态（例如歌曲加载中竞态导致 finishDragOpen 未能落实），
+  // 此处强制清掉内联让 FullPlayer 恢复正常可交互的全屏状态
+  if (statusStore.showFullPlayer && !dragOpenActive) {
+    const stalled = document.querySelector(".full-player") as HTMLElement | null;
+    if (stalled && (stalled.style.transform || stalled.style.pointerEvents === "none")) {
+      stalled.style.transition = "";
+      stalled.style.transform = "";
+      stalled.style.borderRadius = "";
+      stalled.style.transformOrigin = "";
+      stalled.style.willChange = "";
+      stalled.style.pointerEvents = "";
+      stalled.style.backfaceVisibility = "";
+      const mainEl = document.getElementById("main");
+      if (mainEl) {
+        mainEl.style.transition = "";
+        mainEl.style.transform = "";
+        mainEl.style.opacity = "";
+        mainEl.style.willChange = "";
+      }
+      dragOpenParent = null;
+      dragOpenMain = null;
+      setDragOpenFlag(false);
+    }
+  }
   pointerId = e.pointerId;
   dragStartX = e.clientX;
   dragStartY = e.clientY;
@@ -486,10 +577,11 @@ const onPointerMove = (e: PointerEvent) => {
       setDragOpenFlag(true);
       dragOpenActive = true;
       statusStore.showFullPlayer = true;
+      // 等到下一帧再 initDragOpen，给 <Transition mode="out-in"> 留出挂载时机
+      // 实际写入由 initDragOpen 内部基于最新 dragLastDy 完成，避免使用过期 dy
       requestAnimationFrame(() => {
         if (!dragOpenActive) return;
         initDragOpen();
-        writeDragOpen(Math.max(dy, 0));
       });
       return;
     }
