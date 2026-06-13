@@ -827,12 +827,9 @@ class PlayerController {
 
     if (isStaleSong()) return;
 
-    // 4 次 IPC 并发：之前串行累计 30-150ms × 4 = 200-600ms 主线程 microtask 排队，
-    // 改为 Promise.all 后单次切歌仅排队 30-150ms。
-    // syncApiContext 通过 mediaSessionManager 共享 dedup（参数无变化时跳过实际 IPC）。
     try {
+      await mediaSessionManager.syncAndroidApiContext();
       await Promise.all([
-        mediaSessionManager.syncAndroidApiContext(),
         AndroidNativePlayback.updateQueueContext({
           liked: typeof song.id === "number" ? dataStore.isLikeSong(song.id) : false,
           canSkipPrevious: !statusStore.personalFmMode,

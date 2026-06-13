@@ -598,6 +598,7 @@ public final class PlaybackManager {
 
     // 立即预解析前方未解析项，避免后台 ENDED 时才发现无 URL。
     prefetchUpcomingUrls();
+    requestUrlsIfWindowExhausted();
     updateMediaSessionButtons();
     updateNotification();
     emitPlaybackState(false);
@@ -659,6 +660,7 @@ public final class PlaybackManager {
       songLevel = level;
     }
     urlResolver.updateContext(apiBaseUrl, cookie, songLevel, disableAiAudio);
+    prefetchUpcomingUrls();
   }
 
   /**

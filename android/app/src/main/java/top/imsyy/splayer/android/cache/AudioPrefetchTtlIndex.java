@@ -97,7 +97,7 @@ public final class AudioPrefetchTtlIndex {
    * 升级为“正式缓存”：调用者判定用户真的听了这首歌（如播放 > 10s）。<br>
    * 从 prefetch 索引中移除，加入 promoted 集合；将不再被 50min TTL sweep 清。
    *
-   * @return true 表示是首次 promote（调用者可据此决定是否启动全量下载）
+   * @return true 表示是首次 promote（调用者可据此决定是否启动预载）
    */
   public boolean promote(@NonNull String cacheKey) {
     if (cacheKey.isEmpty()) return false;
@@ -149,11 +149,9 @@ public final class AudioPrefetchTtlIndex {
 
     Map<String, ?> all = prefs.getAll();
 
-    SimpleCache cache;
-    try {
-      cache = AudioCacheProvider.getOrCreate(appContext);
-    } catch (Throwable e) {
-      Log.w(TAG, "sweep: SimpleCache not ready, skip");
+    SimpleCache cache = AudioCacheProvider.peekSimpleCache();
+    if (cache == null) {
+      Log.d(TAG, "sweep: SimpleCache not initialized, skip");
       return;
     }
     Set<String> liveKeys = new HashSet<>(cache.getKeys());
@@ -191,18 +189,22 @@ public final class AudioPrefetchTtlIndex {
           editor.remove(cacheKey);
           continue;
         }
+        long latestTs = prefs.getLong(cacheKey, ts);
+        if (latestTs >= expireBefore) {
+          continue;
+        }
         try {
           cache.removeResource(cacheKey);
+          editor.remove(cacheKey);
+          expired++;
         } catch (Throwable e) {
           Log.w(TAG, "sweep: removeResource failed: " + cacheKey, e);
         }
-        editor.remove(cacheKey);
-        expired++;
       }
     }
     editor.apply();
 
-    // 2) 扫 promoted 集合：清除 SimpleCache 已不存在的孤儿条目（被全局 LRU 配额删过）
+    // 2) 扫 promoted 集合：清除 SimpleCache 已不存在的孤立条目（被全局 LRU 配额删过）
     Map<String, ?> promotedAll = promotedPrefs.getAll();
     SharedPreferences.Editor pEditor = promotedPrefs.edit();
     int promotedOrphan = 0;

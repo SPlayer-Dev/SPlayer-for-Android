@@ -366,13 +366,13 @@ public final class AudioCacheProvider {
   // ========== prefetch ==========
 
   private static final String TAG = "AudioCachePrefetch";
-  /** 默认预下载字节数：512 KB，足够 ExoPlayer 启播第一帧解码 + 内部缓冲。 */
-  public static final long DEFAULT_PREFETCH_BYTES = 512L * 1024L;
-  /** 短预载单线程：供“下一首前 512KB”使用，低占用高响应。 */
+  /** 默认预下载字节数：2 MB，避免无损 / Hi-Res 在开头数秒跨过 512 KB 缓存边界后阻塞。 */
+  public static final long DEFAULT_PREFETCH_BYTES = 2L * 1024L * 1024L;
+  /** 短预载单线程：供“下一首前段音频”使用，低占用高响应。 */
   private static volatile ExecutorService prefetchExecutor;
   /**
    * 全量下载独立单线程：全量一首 5-10MB 需背景跑，不能占着短预载走道。<br>
-   * 拆走后：load 下一首 → prefetchExecutor 立即跑 512KB；全量送到 fullDownloadExecutor。
+   * 拆走后：load 下一首 → prefetchExecutor 立即跑短预载；全量送到 fullDownloadExecutor。
    */
   private static volatile ExecutorService fullDownloadExecutor;
   /** 全量下载任务取消标志；cancelAllPrefetch / clearAll 需要能同步中断。 */
@@ -380,9 +380,9 @@ public final class AudioCacheProvider {
   /** 已在排队 / 进行中的 cacheKey 集合，幂等去重。 */
   private static final Set<String> inFlight = new HashSet<>();
   /**
-   * 每个 cacheKey 独立写锁：保证同 cacheKey 的 CacheWriter 不会并发执行（短预载 + 全量任务跨 executor 时
+   * 每个 cacheKey 独立写锁：保证同 cacheKey 的 CacheWriter 不会并发执行（短预载 + 预载任务跨 executor 时
    * 都从位置 0 写同一组 span，并发会触发 SimpleCache 的 holeSpan 锁竞争 + CacheException）。<br>
-   * 短任务持锁 ~1s 完成；全量任务后到达直接接力——FLAG_BLOCK_ON_CACHE 会跳过已缓存字节只下剩余部分。<br>
+   * 短任务持锁 ~1s 完成；预载任务后到达直接接力——FLAG_BLOCK_ON_CACHE 会跳过已缓存字节只下剩余部分。<br>
    * 用 ConcurrentHashMap 保证 computeIfAbsent 的原子性。
    */
   private static final Map<String, Object> cacheKeyWriterLocks = new ConcurrentHashMap<>();
@@ -408,7 +408,7 @@ public final class AudioCacheProvider {
     return prefetchExecutor;
   }
 
-  /** 全量下载独立 executor：与短预载不抢资源。 */
+  /** 预载 独立 executor：与短预载不抢资源。 */
   @NonNull
   private static ExecutorService getFullDownloadExecutor() {
     if (fullDownloadExecutor == null) {
@@ -419,7 +419,7 @@ public final class AudioCacheProvider {
                   r -> {
                     Thread t = new Thread(r, "audio-cache-full-download");
                     t.setDaemon(true);
-                    // 更低优先级：全量下载为后台作业，不应抢占短预载 / 当前播放。
+                    // 更低优先级：预载 为后台作业，不应抢占短预载 / 当前播放。
                     t.setPriority(Thread.NORM_PRIORITY - 2);
                     return t;
                   });
@@ -438,7 +438,7 @@ public final class AudioCacheProvider {
    * <p>幂等：同 cacheKey 已在队列或已 ready 时直接 no-op。
    *
    * @param appContext app context
-   * @param url 要预下载的 http(s) url；非 http 直接忽略
+   * @param url 要预 的 http(s) url；非 http 直接忽略
    */
   public static void prefetchUrl(@NonNull Context appContext, @Nullable String url) {
     prefetchUrlWithLength(appContext, url, DEFAULT_PREFETCH_BYTES, /* cancelPrev= */ true);
@@ -453,7 +453,7 @@ public final class AudioCacheProvider {
    * 排到自己时若用户已经切歌，TTL 索引也会让本任务的字节仍然有效（promoted=true）。
    */
   public static void prefetchUrlFull(@NonNull Context appContext, @Nullable String url) {
-    // 幂等短路：已 promoted 跳过。全量下载的推进与最终 promote 标记都在 prefetchUrlWithLength 内负责。
+    // 幂等短路：已 promoted 跳过。预载 的推进与最终 promote 标记都在 prefetchUrlWithLength 内负责。
     if (url == null || url.isEmpty()) return;
     Uri uri = Uri.parse(url);
     // scheme 校验与短预载入口保持一致：非 http(s) 直接拒绝，避免误算 cacheKey 与日志噪声。
@@ -461,15 +461,15 @@ public final class AudioCacheProvider {
     if (scheme == null || (!scheme.equals("http") && !scheme.equals("https"))) return;
     String cacheKey = resolveCacheKey(uri);
     if (AudioPrefetchTtlIndex.getInstance(appContext).isPromoted(cacheKey)) return;
-    // cancelPrev=false：完整下载不应抢占已经在跑的短预载
+    // cancelPrev=false：完整 不应抢占已经在跑的短预载
     prefetchUrlWithLength(appContext, url, /* length= */ Long.MAX_VALUE, /* cancelPrev= */ false);
   }
 
-  /** 公共实现：length 控制下载字节数；cancelPrev 控制是否取消上一首未完成的任务。 */
+  /** 公共实现：length 控制 字节数；cancelPrev 控制是否取消上一首未完成的任务。 */
   private static void prefetchUrlWithLength(
       @NonNull Context appContext, @Nullable String url, long length, boolean cancelPrev) {
     if (url == null || url.isEmpty()) return;
-    // 低磁盘：不启动任何 prefetch（短预载 / 全量下载都被拦）。在 PlaybackManager.schedulePromotion 调用前路拦截。
+    // 低磁盘：不启动任何 prefetch（短预载 / 预载 都被拦）。在 PlaybackManager.schedulePromotion 调用前路拦截。
     if (isLowDiskSpace(appContext)) {
       Log.d(TAG, "low disk: prefetch skipped for " + url);
       return;
@@ -492,7 +492,7 @@ public final class AudioCacheProvider {
     // 已完整命中（cachedBytes ≥ length 阈值）则跳过 IO；但仍刷新 TTL 索引让缓存"续期"
     long probeLength = length == Long.MAX_VALUE ? DEFAULT_PREFETCH_BYTES : length;
     long cachedBytes = cache.getCachedBytes(cacheKey, 0, probeLength);
-    // 全量下载场景：还需要确认是否真的下完了（用 contentLength 判断更准但成本高，这里宽松判定）
+    // 预载 场景：还需要确认是否真的下完了（用 contentLength 判断更准但成本高，这里宽松判定）
     if (length != Long.MAX_VALUE && cachedBytes >= length) {
       ttlIndex.markAccess(cacheKey);
       synchronized (inFlight) {
@@ -510,7 +510,7 @@ public final class AudioCacheProvider {
       currentCancelFlag = cancelFlag;
     }
     if (isFull) {
-      // 全量下载不抢带宽但要可被 cancelAll 中断；覆盖上次未完成的全量任务取消标。
+      // 预载 不抢带宽但要可被 cancelAll 中断；覆盖上次未完成的预载任务取消标。
       AtomicBoolean prevFull = currentFullCancelFlag;
       if (prevFull != null) prevFull.set(true);
       currentFullCancelFlag = cancelFlag;
@@ -518,7 +518,7 @@ public final class AudioCacheProvider {
     final AtomicBoolean cancelFlagFinal = cancelFlag;
     final long lengthFinal = length;
 
-    // 路由：全量走后台 executor，短预载走响应 executor，互不阻塞。
+    // 路由：预载走后台 executor，短预载走响应 executor，互不阻塞。
     ExecutorService chosen = isFull ? getFullDownloadExecutor() : getExecutor();
     chosen.execute(() -> {
       // 取每个 cacheKey 自己的 monitor：跨 executor 时同 cacheKey 串行，避免并发 CacheWriter 写同一组 span
@@ -548,7 +548,7 @@ public final class AudioCacheProvider {
                     if (cancelFlagFinal.get()) Thread.currentThread().interrupt();
                   });
           writer.cache();
-          // 全量下载（length=MAX_VALUE）成功返回才标 promoted；CacheWriter 中途抛异常会走到 catch，不会 promote。
+          // 预载 （length=MAX_VALUE）成功返回才标 promoted；CacheWriter 中途抛异常会走到 catch，不会 promote。
           // 这样 getPromotedAudioFile 看到 isPromoted=true 时，可认为文件完整；automix 不会读到截断字节。
           //
           // 修复 #1：promote 前比对实际缓存字节数 vs upstream Content-Length（CacheDataSource 在 open 时
@@ -586,7 +586,7 @@ public final class AudioCacheProvider {
     });
   }
 
-  /** 取消所有正在排队的 prefetch（应用关闭 / 清缓存场景）；同时中断全量下载。 */
+  /** 取消所有正在排队的 prefetch（应用关闭 / 清缓存场景）；同时中断预载 。 */
   public static void cancelAllPrefetch() {
     AtomicBoolean flag = currentCancelFlag;
     if (flag != null) flag.set(true);
