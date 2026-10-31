@@ -1,21 +1,26 @@
 package top.imsyy.splayer.android.download;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
+import android.os.Build;
 import androidx.activity.result.ActivityResult;
 import androidx.annotation.Nullable;
 import androidx.documentfile.provider.DocumentFile;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -30,7 +35,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-@CapacitorPlugin(name = "AndroidDownload")
+@CapacitorPlugin(
+    name = "AndroidDownload",
+    permissions = {
+      @Permission(
+          alias = "music",
+          strings = {Manifest.permission.READ_MEDIA_AUDIO}),
+      @Permission(
+          alias = "legacyMusic",
+          strings = {Manifest.permission.READ_EXTERNAL_STORAGE})
+    })
 public class AndroidDownloadPlugin extends Plugin {
   private static final int READ_FLAGS =
       Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -409,9 +423,12 @@ public class AndroidDownloadPlugin extends Plugin {
   /** 从 DocumentFile 提取歌曲元数据（艺术家、专辑、时长等） */
   @Nullable
   private JSObject buildSongMetadata(DocumentFile file, String fileName) {
-    String uri = file.getUri().toString();
-    long size = file.length();
-    long lastModified = file.lastModified();
+    return buildSongMetadata(file.getUri(), fileName, file.length(), file.lastModified());
+  }
+
+  @Nullable
+  private JSObject buildSongMetadata(Uri audioUri, String fileName, long size, long lastModified) {
+    String uri = audioUri.toString();
 
     // 默认从文件名解析（"Artist - Title.ext" 或 "Title.ext"）
     String baseName = fileName;
@@ -439,7 +456,7 @@ public class AndroidDownloadPlugin extends Plugin {
     MediaMetadataRetriever retriever = null;
     try {
       retriever = new MediaMetadataRetriever();
-      retriever.setDataSource(getContext(), file.getUri());
+      retriever.setDataSource(getContext(), audioUri);
 
       String mTitle = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
       String mArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST);
@@ -663,56 +680,73 @@ public class AndroidDownloadPlugin extends Plugin {
     call.resolve(response);
   }
 
-  /** 扫描本地音乐目录列表（多目录递归），返回歌曲数组 */
+  private boolean hasMusicPermission() {
+    return getPermissionState(musicPermissionAlias()) == PermissionState.GRANTED;
+  }
+
+  private String musicPermissionAlias() {
+    return Build.VERSION.SDK_INT >= 33 ? "music" : "legacyMusic";
+  }
+
   @PluginMethod
-  public void scanLocalMusic(PluginCall call) {
-    JSArray directories = call.getArray("directories");
-    if (directories == null || directories.length() == 0) {
-      JSObject empty = new JSObject();
-      empty.put("songs", new JSArray());
-      call.resolve(empty);
+  public void checkMusicPermission(PluginCall call) {
+    JSObject result = new JSObject();
+    result.put("granted", hasMusicPermission());
+    call.resolve(result);
+  }
+
+  @PluginMethod
+  public void requestMusicPermission(PluginCall call) {
+    if (hasMusicPermission()) {
+      checkMusicPermission(call);
       return;
     }
+    requestPermissionForAlias(musicPermissionAlias(), call, "musicPermissionResult");
+  }
 
+  @PermissionCallback
+  private void musicPermissionResult(PluginCall call) {
+    checkMusicPermission(call);
+  }
+
+  /** 合并授权目录与系统音频库，后台扫描不弹出权限请求。 */
+  @PluginMethod
+  public void scanLocalMusic(PluginCall call) {
+    JSArray directories = call.getArray("directories", new JSArray());
+    JSArray excludedDirectories = call.getArray("excludedDirectories", new JSArray());
+    boolean includeDeviceAudio = call.getBoolean("includeDeviceAudio", false);
+    boolean excludeWhatsApp = call.getBoolean("excludeWhatsApp", true);
     executor.execute(
         () -> {
-          JSArray songs = new JSArray();
-          int failedDirs = 0;
+          try {
+            boolean mediaPermissionDenied = includeDeviceAudio && !hasMusicPermission();
+            LocalMusicScanner scanner =
+                new LocalMusicScanner(
+                    getContext(),
+                    new LocalMusicScanner.MetadataReader() {
+                      @Override
+                      public JSObject read(Uri uri, String name, long size, long modified) {
+                        return buildSongMetadata(uri, name, size, modified);
+                      }
 
-          for (int i = 0; i < directories.length(); i++) {
-            try {
-              Object item = directories.get(i);
-              String uriText;
-              if (item instanceof JSObject) {
-                uriText = ((JSObject) item).getString("uri", "");
-              } else if (item instanceof org.json.JSONObject) {
-                uriText = ((org.json.JSONObject) item).optString("uri", "");
-              } else {
-                uriText = String.valueOf(item);
-              }
-              if (uriText == null || uriText.isEmpty()) {
-                failedDirs++;
-                continue;
-              }
-
-              Uri uri = Uri.parse(uriText);
-              DocumentFile directory = DocumentFile.fromTreeUri(getContext(), uri);
-              if (directory == null || !directory.exists() || !directory.canRead()) {
-                failedDirs++;
-                continue;
-              }
-              scanAudioFiles(directory, songs);
-            } catch (SecurityException error) {
-              failedDirs++;
-            } catch (Exception error) {
-              failedDirs++;
+                      @Override
+                      public boolean isAudio(String name) {
+                        return isAudioFile(name);
+                      }
+                    },
+                    excludeWhatsApp,
+                    excludedDirectories);
+            JSObject response =
+                scanner.scan(directories, includeDeviceAudio && !mediaPermissionDenied);
+            if (includeDeviceAudio && !mediaPermissionDenied && !hasMusicPermission()) {
+              call.reject("LOCAL_MUSIC_PERMISSION_REVOKED");
+              return;
             }
+            response.put("mediaPermissionDenied", mediaPermissionDenied);
+            call.resolve(response);
+          } catch (Exception error) {
+            call.reject("LOCAL_MUSIC_SCAN_FAILED", error);
           }
-
-          JSObject response = new JSObject();
-          response.put("songs", songs);
-          response.put("failedDirectories", failedDirs);
-          call.resolve(response);
         });
   }
 
