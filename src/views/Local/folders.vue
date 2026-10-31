@@ -59,7 +59,10 @@ const folderData = computed<Record<string, SongType[]>>(() => {
     if (!fullPath) return;
 
     // 去掉文件名，提取目录路径
-    const folderPath = fullPath.replace(/[/\\][^/\\]*$/, "") || "未知文件夹";
+    const folderPath =
+      song.sourceFolder?.replace(/[/\\]+$/, "") ||
+      fullPath.replace(/[/\\][^/\\]*$/, "") ||
+      "未知文件夹";
 
     if (!map[folderPath]) map[folderPath] = [];
     // 去重

@@ -98,6 +98,7 @@ export const formatSongsList = (data: any[]): SongType[] => {
       mark: item.mark,
       size: Number(item.size || 0),
       path: item.path,
+      sourceFolder: item.sourceFolder,
       pc: !!item.pc,
       quality: item?.path
         ? handleSongQuality(item.quality, "local")

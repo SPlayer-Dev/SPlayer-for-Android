@@ -208,7 +208,7 @@ public class AndroidLocalLyricPlugin extends Plugin {
         Uri treeUri = permission.getUri();
         JSObject result = findSidecarFromTree(audioUri, treeUri, baseName);
         if (result == null && mediaInfo != null) {
-          result = findSidecarFromMediaStoreInfo(treeUri, mediaInfo.relativePath, baseName);
+          result = findSidecarFromMediaStoreInfo(treeUri, mediaInfo, baseName);
         }
         if (result != null) return result;
       }
@@ -221,16 +221,26 @@ public class AndroidLocalLyricPlugin extends Plugin {
 
   @Nullable
   private MediaStoreAudioInfo queryMediaStoreAudioInfo(Uri audioUri) {
-    String[] projection = {
-      MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH
-    };
+    boolean isMediaStore = "media".equals(audioUri.getAuthority());
+    String[] projection =
+        isMediaStore
+            ? new String[] {
+              MediaStore.MediaColumns.DISPLAY_NAME,
+              MediaStore.MediaColumns.RELATIVE_PATH,
+              MediaStore.MediaColumns.VOLUME_NAME
+            }
+            : new String[] {
+              MediaStore.MediaColumns.DISPLAY_NAME, MediaStore.MediaColumns.RELATIVE_PATH
+            };
     try (Cursor cursor =
         getContext().getContentResolver().query(audioUri, projection, null, null, null)) {
       if (cursor == null || !cursor.moveToFirst()) return null;
       String displayName = getCursorString(cursor, MediaStore.MediaColumns.DISPLAY_NAME);
       String relativePath = getCursorString(cursor, MediaStore.MediaColumns.RELATIVE_PATH);
       if (displayName.isEmpty() && relativePath.isEmpty()) return null;
-      return new MediaStoreAudioInfo(displayName, relativePath);
+      String volumeName =
+          isMediaStore ? getCursorString(cursor, MediaStore.MediaColumns.VOLUME_NAME) : "";
+      return new MediaStoreAudioInfo(displayName, relativePath, volumeName);
     } catch (Exception ignored) {
       return null;
     }
@@ -271,12 +281,13 @@ public class AndroidLocalLyricPlugin extends Plugin {
 
   @Nullable
   private JSObject findSidecarFromMediaStoreInfo(
-      Uri treeUri, String mediaRelativePath, String baseName) {
+      Uri treeUri, MediaStoreAudioInfo mediaInfo, String baseName) {
     try {
+      if (!"com.android.externalstorage.documents".equals(treeUri.getAuthority())) return null;
       String treeDocumentId = DocumentsContract.getTreeDocumentId(treeUri);
       String parentRelativePath =
           AndroidLocalLyricPathMapper.mapMediaParentToTreeRelativePath(
-              treeDocumentId, mediaRelativePath);
+              treeDocumentId, mediaInfo.relativePath, mediaInfo.volumeName);
       if (parentRelativePath == null) return null;
 
       DocumentFile parent = resolveTreeDocument(treeUri, parentRelativePath);
@@ -607,9 +618,12 @@ public class AndroidLocalLyricPlugin extends Plugin {
     final String displayName;
     final String relativePath;
 
-    MediaStoreAudioInfo(String displayName, String relativePath) {
+    final String volumeName;
+
+    MediaStoreAudioInfo(String displayName, String relativePath, String volumeName) {
       this.displayName = displayName;
       this.relativePath = relativePath;
+      this.volumeName = volumeName;
     }
   }
 

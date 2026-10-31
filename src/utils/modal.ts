@@ -712,7 +712,7 @@ export const openScalingModal = async () => {
 export const openLocalMusicDirectoryModal = async () => {
   const { default: LocalMusicDirectory } =
     await import("@/components/Modal/Setting/LocalMusicDirectory.vue");
-  window.$modal.create({
+  const modal = window.$modal.create({
     preset: "card",
     transformOrigin: "center",
     autoFocus: false,
@@ -721,7 +721,7 @@ export const openLocalMusicDirectoryModal = async () => {
     style: { width: "600px" },
     title: "目录管理",
     content: () => {
-      return h(LocalMusicDirectory);
+      return h(LocalMusicDirectory, { onClose: () => modal.destroy() });
     },
   });
 };
