@@ -96,6 +96,8 @@ export type SongType = {
   mv: number | null;
   /** 本地路径 */
   path?: string;
+  /** 本地扫描的来源目录 */
+  sourceFolder?: string;
   /** 是否为云盘歌曲 */
   pc?: boolean;
   /** 大小 */

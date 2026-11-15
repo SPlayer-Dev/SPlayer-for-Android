@@ -1,9 +1,25 @@
 package top.imsyy.splayer.android.lyric;
 
 import androidx.annotation.Nullable;
+import java.util.Locale;
 
 final class AndroidLocalLyricPathMapper {
   private AndroidLocalLyricPathMapper() {}
+
+  @Nullable
+  static String mapMediaParentToTreeRelativePath(
+      String treeDocumentId, String mediaRelativePath, String mediaVolume) {
+    int separator = treeDocumentId.indexOf(':');
+    if (separator < 1 || mediaVolume == null || mediaVolume.isEmpty()) return null;
+    String treeVolume = normalizeVolume(treeDocumentId.substring(0, separator));
+    if (!treeVolume.equals(normalizeVolume(mediaVolume))) return null;
+    return mapMediaParentToTreeRelativePath(treeDocumentId, mediaRelativePath);
+  }
+
+  private static String normalizeVolume(String volume) {
+    String normalized = volume.toLowerCase(Locale.ROOT);
+    return normalized.equals("primary") ? "external_primary" : normalized;
+  }
 
   @Nullable
   static String mapMediaParentToTreeRelativePath(String treeDocumentId, String mediaRelativePath) {

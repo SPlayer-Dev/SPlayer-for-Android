@@ -40,4 +40,25 @@ public class AndroidLocalLyricPathMapperTest {
   public void rejectsBlankMediaStoreRelativePath() {
     assertNull(AndroidLocalLyricPathMapper.mapMediaParentToTreeRelativePath("primary:", ""));
   }
+
+  @Test
+  public void requiresMatchingStorageVolumeForMediaStoreSidecars() {
+    assertEquals(
+        "Album",
+        AndroidLocalLyricPathMapper.mapMediaParentToTreeRelativePath(
+            "primary:Music", "Music/Album/", "external_primary"));
+    assertEquals(
+        "Album",
+        AndroidLocalLyricPathMapper.mapMediaParentToTreeRelativePath(
+            "1234-ABCD:Music", "Music/Album/", "1234-abcd"));
+    assertNull(
+        AndroidLocalLyricPathMapper.mapMediaParentToTreeRelativePath(
+            "primary:Music", "Music/Album/", "1234-abcd"));
+    assertNull(
+        AndroidLocalLyricPathMapper.mapMediaParentToTreeRelativePath(
+            "1234-abcd:Music", "Music/Album/", "external_primary"));
+    assertNull(
+        AndroidLocalLyricPathMapper.mapMediaParentToTreeRelativePath(
+            "primary:Music", "Music/Album/", ""));
+  }
 }

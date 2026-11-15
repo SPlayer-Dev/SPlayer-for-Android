@@ -6,6 +6,17 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
 
+def nodeRuntimeJniDir = layout.buildDirectory.dir('generated/node-runtime-jni')
+def prepareNodeRuntime = tasks.register('prepareNodeRuntimeJniLibs', Sync) {
+    from('libs/cdvnodejsmobile/libnode/bin') {
+        include '**/libnode.so'
+    }
+    into(nodeRuntimeJniDir)
+}
+tasks.named('preBuild').configure {
+    dependsOn prepareNodeRuntime
+}
+
 android {
     namespace = "top.imsyy.splayer.android"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -49,6 +60,13 @@ android {
             universalApk false
         }
     }
+
+    // 只收集解压后的运行库，避免原始 gzip 文件与 ELF 文件冲突。
+    sourceSets {
+        main {
+            jniLibs.srcDir nodeRuntimeJniDir
+        }
+    }
 }
 
 repositories {
@@ -74,6 +92,7 @@ dependencies {
 }
 
 apply from: 'capacitor.build.gradle'
+apply from: 'verify-node-runtime.gradle'
 
 try {
     def servicesJSON = file('google-services.json')

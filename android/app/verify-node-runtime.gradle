@@ -1,0 +1,44 @@
+import java.util.zip.ZipFile
+
+// 验证安装包中的实际运行库，避免编译成功但启动时缺少依赖。
+android.applicationVariants.all { variant ->
+    def verifyRuntime = tasks.register("verify${variant.name.capitalize()}NodeRuntime") {
+        dependsOn variant.packageApplicationProvider
+        doLast {
+            def apks = fileTree(layout.buildDirectory.dir("outputs/apk/${variant.dirName}")) {
+                include '**/*.apk'
+            }.files
+            if (apks.isEmpty()) {
+                throw new GradleException("未找到 ${variant.name} 安装包，无法验证原生运行库")
+            }
+            apks.each { apk ->
+                new ZipFile(apk).withCloseable { archive ->
+                    def bridges = archive.entries().findAll {
+                        it.name ==~ /lib\/[^\/]+\/libnodejs-mobile-cordova-native-lib\.so/
+                    }
+                    if (bridges.isEmpty()) {
+                        throw new GradleException("${apk.name} 缺少 Node.js 原生桥接库")
+                    }
+                    bridges.each { bridge ->
+                        def abi = bridge.name.split('/')[1]
+                        ['libnode.so', 'libnodejs-mobile-cordova-native-lib.so', 'libc++_shared.so'].each { library ->
+                            def entry = archive.getEntry("lib/${abi}/${library}")
+                            if (entry == null) {
+                                throw new GradleException("${apk.name} 缺少 lib/${abi}/${library}，启动会失败")
+                            }
+                            archive.getInputStream(entry).withCloseable { input ->
+                                if (input.read() != 0x7f || input.read() != 0x45 || input.read() != 0x4c || input.read() != 0x46) {
+                                    throw new GradleException("${apk.name} 中 ${library} 不是有效的 ELF 运行库")
+                                }
+                            }
+                        }
+                    }
+                    logger.lifecycle("原生运行库验证通过：${apk.name}")
+                }
+            }
+        }
+    }
+    variant.assembleProvider.configure {
+        dependsOn verifyRuntime
+    }
+}

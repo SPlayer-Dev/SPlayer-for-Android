@@ -289,6 +289,12 @@ export interface SettingState {
   androidDownloadDirectoryUri: string;
   /** Android 本地音乐目录列表（SAF URI） */
   androidLocalMusicDirectories: { uri: string; name: string }[];
+  /** 扫描系统音频库 */
+  androidScanDeviceMusic: boolean;
+  /** 排除 WhatsApp 音频和语音目录 */
+  androidExcludeWhatsApp: boolean;
+  /** 排除的存储相对目录 */
+  androidExcludedMusicDirectories: string[];
   /** 桌面页面缩放 */
   pageZoom: number;
   /** 手机竖屏页面缩放 */
@@ -685,6 +691,9 @@ export const useSettingStore = defineStore("setting", {
     },
     androidDownloadDirectoryUri: "",
     androidLocalMusicDirectories: [],
+    androidScanDeviceMusic: false,
+    androidExcludeWhatsApp: true,
+    androidExcludedMusicDirectories: [],
     pageZoom: 100,
     phonePortraitPageZoom: 100,
     padPortraitPageZoom: 100,

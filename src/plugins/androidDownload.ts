@@ -51,12 +51,16 @@ export interface AndroidLocalAudioEntry {
   ext: string;
   /** 文件最后修改时间戳 */
   lastModified: number;
+  /** 扫描来源目录，用于本地曲库分组 */
+  sourceFolder?: string;
 }
 
 export interface AndroidLocalScanResult {
   songs: AndroidLocalAudioEntry[];
   /** 扫描失败的目录数（仅本地音乐扫描时返回） */
   failedDirectories?: number;
+  filteredCount?: number;
+  mediaPermissionDenied?: boolean;
 }
 
 export interface AndroidLocalMusicDirectoryRef {
@@ -85,9 +89,14 @@ export interface AndroidDownloadPlugin {
   listDownloadedSongs(options: { directoryUri: string }): Promise<AndroidLocalScanResult>;
   /** 选取本地音乐目录（SAF 树选择器，仅授予读权限） */
   pickLocalMusicDirectory(): Promise<AndroidDownloadPickResult>;
+  checkMusicPermission(): Promise<{ granted: boolean }>;
+  requestMusicPermission(): Promise<{ granted: boolean }>;
   /** 扫描本地音乐目录列表，返回所有歌曲 */
   scanLocalMusic(options: {
     directories: AndroidLocalMusicDirectoryRef[];
+    includeDeviceAudio?: boolean;
+    excludeWhatsApp?: boolean;
+    excludedDirectories?: string[];
   }): Promise<AndroidLocalScanResult>;
   addListener(
     eventName: "downloadProgress",

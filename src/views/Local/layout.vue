@@ -181,6 +181,7 @@ import { debounce } from "lodash-es";
 import type { DropdownOption, MessageReactive } from "naive-ui";
 import { isCapacitorAndroid } from "@/utils/env";
 import { AndroidDownload } from "@/plugins/androidDownload";
+import { createLatestScanRunner } from "@/utils/latestScan";
 
 const router = useRouter();
 const localStore = useLocalStore();
@@ -210,6 +211,13 @@ const folderOptions = computed(() => {
   const options: { label: string; value: string }[] = [{ label: "全部文件夹", value: "all" }];
 
   if (isCapacitorAndroid) {
+    const systemFolders = new Set<string>();
+    for (const song of localStore.localSongs) {
+      if (song.sourceFolder && !song.sourceFolder.startsWith("content://")) {
+        systemFolders.add(song.sourceFolder);
+      }
+    }
+    for (const folder of systemFolders) options.push({ label: folder, value: folder });
     // Android: 基于 SAF 目录列表
     settingStore.androidLocalMusicDirectories.forEach((item) => {
       if (!item.uri) return;
@@ -243,7 +251,7 @@ const getFilteredData = (): SongType[] => {
       const folderUri = selectedFolder.value;
       data = data.filter((song) => {
         if (!song.path) return false;
-        return song.path.startsWith(folderUri);
+        return song.sourceFolder === folderUri || song.path.startsWith(folderUri);
       });
     } else {
       // 标准化选中的文件夹路径（统一使用反斜杠）
@@ -290,7 +298,11 @@ const handlePlay = () => {
 
 // 是否存在配置目录与歌曲
 const hasConfig = computed<boolean>(() => {
-  if (isCapacitorAndroid) return settingStore.androidLocalMusicDirectories.length > 0;
+  if (isCapacitorAndroid) {
+    return (
+      settingStore.androidScanDeviceMusic || settingStore.androidLocalMusicDirectories.length > 0
+    );
+  }
   return settingStore.localFilesPath.length > 0;
 });
 const hasSong = computed<boolean>(() => localStore.localSongs.length > 0);
@@ -403,9 +415,53 @@ const isSyncCompleteData = (value: unknown): value is SyncCompleteData => {
   );
 };
 
+// Android 扫描串行执行，规则变化后丢弃旧结果
+const androidScanRunner = createLatestScanRunner(
+  async () => {
+    loading.value = true;
+    return AndroidDownload.scanLocalMusic({
+      directories: settingStore.androidLocalMusicDirectories.filter((item) => item.uri),
+      includeDeviceAudio: settingStore.androidScanDeviceMusic,
+      excludeWhatsApp: settingStore.androidExcludeWhatsApp,
+      excludedDirectories: settingStore.androidExcludedMusicDirectories,
+    });
+  },
+  async (result) => {
+    if (result.mediaPermissionDenied) {
+      throw new Error(
+        "音频权限已撤销，现有曲库已保留。请在目录管理中重新授权，或选择仅扫描已添加目录",
+      );
+    }
+    if (result.failedDirectories) {
+      throw new Error(`${result.failedDirectories} 个目录读取失败，请检查目录授权后重试`);
+    }
+    const tracks = result.songs as unknown as Record<string, unknown>[];
+    const finalSongs = formatSongsList(tracks);
+    await localStore.updateLocalSong(finalSongs);
+    filteredSearchResult.value = searchValue.value
+      ? fuzzySearch(searchValue.value, finalSongs)
+      : [];
+    window.$message.success(
+      `已发现 ${finalSongs.length} 首歌曲，已过滤 ${result.filteredCount || 0} 首`,
+    );
+    loading.value = false;
+  },
+  (error) => {
+    console.error("Android 本地音乐扫描失败:", error);
+    window.$message.error(
+      error instanceof Error ? error.message : "本地音乐扫描失败，请检查音频和目录权限",
+    );
+    loading.value = false;
+  },
+);
+
 // 获取全部路径歌曲（流式接收）
 const getAllLocalMusic = debounce(
   async (showTip: boolean = false) => {
+    if (isCapacitorAndroid) {
+      await androidScanRunner.request();
+      return;
+    }
     // 获取路径
     const allPath = await getMusicFolder();
     if (!allPath || !allPath.length) {
@@ -429,43 +485,6 @@ const getAllLocalMusic = debounce(
     loading.value = true;
     // 记录初始歌曲数量，用于计算新增数量
     const initialSongCount = localStore.localSongs.length;
-
-    // Android 分支：调用 Capacitor 插件扫描 SAF 目录
-    if (isCapacitorAndroid) {
-      try {
-        const directories = settingStore.androidLocalMusicDirectories
-          .filter((i) => i.uri)
-          .map((i) => ({ uri: i.uri, name: i.name }));
-        const result = await AndroidDownload.scanLocalMusic({ directories });
-        const tracks = (result?.songs || []) as unknown as Record<string, unknown>[];
-        const finalSongs = formatSongsList(tracks);
-        localStore.updateLocalSong(finalSongs);
-        if (searchValue.value) {
-          filteredSearchResult.value = fuzzySearch(searchValue.value, finalSongs);
-        }
-        const addedCount = finalSongs.length - initialSongCount;
-        if (showTip) {
-          if (addedCount > 0) {
-            window.$message.success(`新增 ${addedCount} 首歌曲`);
-          } else {
-            window.$message.success(`已发现 ${finalSongs.length} 首歌曲`);
-          }
-          if (result?.failedDirectories) {
-            window.$message.warning(`${result.failedDirectories} 个目录读取失败`);
-          }
-        } else if (addedCount > 0) {
-          window.$message.success(`新增 ${addedCount} 首歌曲`);
-        }
-      } catch (error) {
-        console.error("Android 本地音乐扫描失败:", error);
-        window.$message.error("本地音乐扫描失败，请检查目录权限");
-      } finally {
-        loading.value = false;
-        loadingMsg.value?.destroy();
-        loadingMsg.value = null;
-      }
-      return;
-    }
 
     // 累积接收到的tracks
     const receivedTracks: Record<string, unknown>[] = [];
@@ -571,7 +590,10 @@ const listSearch = debounce((val: string) => {
   filteredSearchResult.value = fuzzySearch(val, getFilteredData());
 }, 300);
 
-localEventBus.on(() => getAllLocalMusic());
+localEventBus.on(() => {
+  if (isCapacitorAndroid) androidScanRunner.cancel();
+  getAllLocalMusic(true);
+});
 
 // 本地目录变化
 watch(
@@ -581,9 +603,16 @@ watch(
 );
 // Android 本地目录变化
 watch(
-  () => settingStore.androidLocalMusicDirectories,
-  async () => {
-    if (isCapacitorAndroid) await getAllLocalMusic();
+  () => [
+    settingStore.androidLocalMusicDirectories,
+    settingStore.androidScanDeviceMusic,
+    settingStore.androidExcludeWhatsApp,
+    settingStore.androidExcludedMusicDirectories,
+  ],
+  () => {
+    if (!isCapacitorAndroid) return;
+    androidScanRunner.cancel();
+    getAllLocalMusic();
   },
   { deep: true },
 );
@@ -632,6 +661,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  getAllLocalMusic.cancel();
+  androidScanRunner.cancel();
   // Android 端没有需要清理的 Electron 监听器
   if (isCapacitorAndroid) return;
   // 清理所有相关监听器
